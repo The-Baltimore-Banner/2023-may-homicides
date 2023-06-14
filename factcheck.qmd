@@ -277,6 +277,35 @@ df_forecast_with_trend %>%
 percent_of_forecast
 
 ```
+## "If homicides reverted to the forecast for the rest of the year, the total would be 308."
+
+```{r}
+
+temp <- df_forecast_with_trend %>%
+  slice(6:nrow(df_forecast_with_trend))
+
+sum(temp$x2023_forecast, na.rm = TRUE)
+
+
+
+```
+
+```{r}
+
+temp2 <- df_forecast_with_trend %>%
+  select(month, starts_with("x2023")) %>%
+  slice(1:5)
+
+sum(temp2$x2023)
+
+```
+
+```{r}
+
+sum(temp$x2023_forecast, na.rm = TRUE) + sum(temp2$x2023)
+
+```
+
 
 ## "As one example, the Northeastern District's trend toward more homicides has continued into 2023, where 23 people have been killed, up 28% from last year."
 
