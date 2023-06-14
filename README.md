@@ -7,7 +7,7 @@
  - [License](#license)
  
  ## Overview
-### Homicides in Baltimore down, part of a national trend
+### Homicides in Baltimore are down, part of a national trend
 
 Baltimore is on track to reverse its most deadly trend. If the current pace of fatal shootings holds, it would be the first year since 2018 that the homicide rate went down, not up, and the first year since 2014 with fewer than 300 people killed in the city.
 
