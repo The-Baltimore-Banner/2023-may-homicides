@@ -1,0 +1,367 @@
+---
+title: "factcheck"
+format: html
+editor: visual
+---
+
+```{r}
+
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(forecast)
+library(httr)
+
+#lowers case of every character column in a dataframe
+lower_df <- function(input_df){
+  names <- colnames(input_df)
+  output_df <- input_df
+  names <- colnames(output_df)
+  for (name in names){
+    if (is.character(output_df[[name]])){
+      output_df[[name]] <- tolower(output_df[[name]])
+      #print('yes')
+    } else {
+      output_df[[name]] <- output_df[[name]]
+      #print('no')
+    }
+  }
+  return(output_df)
+}
+
+
+
+headers = c(
+  `Accept` = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+  `Accept-Language` = "en-US,en;q=0.9",
+  `Connection` = "keep-alive",
+  `DNT` = "1",
+  `Referer` = "https://data.baltimorecity.gov/",
+  `Sec-Fetch-Dest` = "document",
+  `Sec-Fetch-Mode` = "navigate",
+  `Sec-Fetch-Site` = "cross-site",
+  `Sec-Fetch-User` = "?1",
+  `Upgrade-Insecure-Requests` = "1",
+  `sec-ch-ua` = '"Not.A/Brand";v="8", "Chromium";v="114", "Google Chrome";v="114"',
+  `sec-ch-ua-mobile` = "?0",
+  `sec-ch-ua-platform` = '"macOS"'
+)
+
+params = list(
+  `format` = "csv",
+  `spatialRefId` = "3857",
+  `where` = "1=1"
+)
+
+response <- httr::GET(url = "https://opendata.arcgis.com/api/v3/datasets/d42a539b21684af7aa49b80071a45aa6_0/downloads/data", httr::add_headers(.headers=headers), query = params)
+
+content_text <- content(response, "text")
+
+# Convert content to data frame
+victims <- read_csv(content_text) %>%
+  #cleaning column names
+  clean_names() %>%
+  #lowering text in df
+  lower_df()%>%
+  #converting to lubridate
+  mutate(crime_date_time = ymd_hms(crime_date_time)) %>%
+  #making year month hour columns
+  mutate(year = year(crime_date_time),
+         month = month(crime_date_time),
+         hour = hour(crime_date_time),
+         date = as_date(crime_date_time, 'day'))  %>%
+  #removing lat/long because there are multiples and ethnicity because it is unreliable
+  select(-row_id, -latitude, -longitude, -ethnicity) %>%#, -shape) %>%
+  #filtering for year
+  #filter(year >= 2011) %>%
+  #splitting geo location
+  separate(geo_location, c("latitude", "longitude"), ',') %>%
+  #removing parenthesis
+  mutate(latitude = gsub('\\(', '', latitude),
+         longitude = gsub('\\)', '', longitude)) %>%
+  #modifying ages that can't be or are very unlikely to be real
+  mutate(age = case_when(
+    age > 0 & age < 100 ~ age,
+    TRUE ~ NA_real_
+  )) %>%
+  #classifying age ranges
+  mutate(age_range = case_when(
+    age > 0 & age <= 12 ~ "child",
+    age <= 18 & age > 12 ~ "high school teen",
+    age >= 18 & age <= 25 ~ "19 to 25",
+    age >= 26 & age <= 34 ~ "26 to 34",
+    age >= 35 & age <= 50 ~ "35 to 50",
+    age > 50 & age < 75 ~ "51 to 74",
+    age >= 75 & age < 85 ~ "75 to 84",
+    age >= 85 ~ "85 to 100",
+    TRUE ~ "NA"
+  )) %>%
+  #adding high_school_age classification
+  mutate(high_school_age_range = case_when(
+    age < 19 & age > 0 ~ "high school age",
+    age >= 19 & age <= 25 ~ "19 to 25",
+    age >= 26 & age <= 34 ~ "26 to 34",
+    age >= 35 & age <= 50 ~ "35 to 50",
+    age > 50 & age < 75 ~ "51 to 74",
+    age >= 75 & age < 85 ~ "75 to 84",
+    age >= 85 ~ "85 to 100",
+    TRUE ~ "NA"
+  )) %>%
+  #classifying time of shooting
+  mutate(time_range = case_when(
+    hour <= 3 ~ "early morning",
+    hour < 12 & hour > 3 ~ "morning",
+    hour >= 12 & hour < 15 ~ "early afternoon",
+    hour >= 13 & hour < 17 ~ "after school",
+    hour >= 17 & hour < 20 ~ "evening",
+    hour >= 20 ~ "night"
+  ))  %>%
+  #labeling quarter by month
+    mutate(quarter = case_when(
+    month %in% c(1,2,3) ~ 1,
+    month %in% c(4,5,6) ~ 2,
+    month %in% c(7,8,9) ~ 3,
+    month %in% c(10,11,12) ~ 4
+  )) %>%
+  #labeling end date of each quarter for viz purposes
+  mutate(quarter_date = case_when(
+    quarter == 1 ~ ymd(paste0(year, "-3-31")),
+    quarter == 2 ~ ymd(paste0(year, "-6-30")),
+    quarter == 3 ~ ymd(paste0(year, "-9-30")),
+    quarter == 4 ~ ymd(paste0(year, "-12-31"))
+  )) %>%
+  filter(year >= 2015) %>%
+  mutate(
+    time = format(as.POSIXct(crime_date_time), format =  "%I:%M:%S %p")
+  )  %>%
+  mutate(during_or_just_after_school = case_when(
+    hour >= 7 & hour <= 18 ~ TRUE,
+    TRUE ~ FALSE
+  )) %>%
+  unique()
+
+shooting_victims <- victims %>%
+  #filtering for shootings and homicides where a firearm was used
+  filter(description %in% c("shooting", "homicide")) %>%
+  filter(weapon == "firearm")
+
+shooting_crimes <- shooting_victims %>%
+  #grouping by distinct instance characteristics to counts crime incidents instead of victions
+  group_by(crime_date_time, location, district, neighborhood, premise, year, month, date, time_range, quarter, latitude, longitude) %>%
+  #summarising characteristics of crimes victims
+  summarise(victims = n(),
+            child_victims = sum(age_range == "child"),
+            child_homicides = sum(description == "homicide" & age_range == "child"),
+            high_school_teen_homicides = sum(description == "homicide" & age_range == "juvenile"),
+            high_school_teen_victims = sum(age_range == "high school teen"),
+            homicides = sum(description == "homicide"),
+            juvenile_homicides = sum(description == "homicide" & age_range == "juvenile"),
+            average_age = mean(age, na.rm = TRUE),
+            description = paste0(unique(description), collapse = ", "),
+            age_of_victims = paste0(age, collapse = ", "),
+            black_victims = sum(race == "black_or_african_american"),
+            white_victims = sum(race == "white"),
+            asian_victims = sum(race == "asian")
+            )
+
+rm(params, response)
+
+```
+
+```{r}
+
+last_date <- victims %>%
+    arrange(desc(date)) %>%
+    select(date) %>%
+    head(1) %>%
+    pull()
+
+last_date <- as.Date(last_date)
+
+last_date
+```
+
+# FACTCHECK
+
+## "The city is projected to end the year with 275 homicides, if trends continue, but a Baltimore Banner analysis found reasons to be cautious."
+
+```{r}
+
+homicides <- victims %>%
+  filter(description == "homicide",
+         year != 2023) %>%
+  mutate(temp = "temp") %>%
+  group_by(year, month) %>%
+  summarise(homicides = n())
+
+
+# Transforming into time series data
+crime_ts <- ts(homicides$homicides, start = 2015, 
+               frequency = 12)  # 12 for monthly data
+
+model <- auto.arima(crime_ts)
+
+print(model)
+
+forecast_result <- forecast(model, h = 12)
+
+print(forecast_result)
+
+```
+
+```{r}
+
+df_forecast_result <- forecast_result %>%
+  as.data.frame() %>%
+  clean_names()
+
+
+df_forecast_with_trend <- victims %>%
+  filter(description == "homicide") %>%
+  mutate(temp = "temp") %>%
+  group_by(year, month) %>%
+  summarise(homicides = n()) %>%
+  pivot_wider(values_from = homicides, names_from = year) %>%
+  bind_cols(df_forecast_result$point_forecast) %>%
+  bind_cols(df_forecast_result$lo_95) %>%
+  bind_cols(df_forecast_result$hi_95) %>%
+  clean_names() %>%
+  rename(x2023_forecast = x11,
+         x2023_low = x12,
+         x2023_hi = x13) %>%
+  mutate(month = (paste0(month, "/1/2023"))) %>%
+  mutate(x2023 = case_when(
+    month == "6/1/2023" ~ NA,
+    TRUE ~ x2023
+  ))
+
+first_5_months <- df_forecast_with_trend %>%
+  slice(1:5) 
+
+percent_of_forecast <- sum(first_5_months$x2023)/sum(first_5_months$x2023_forecast)
+
+df_forecast_with_trend  <- df_forecast_with_trend  %>%
+  mutate(x2023_prediction = x2023_forecast*percent_of_forecast) %>%
+  mutate(x2023_prediction = case_when(
+    row_number() < 6 ~ NA,
+    TRUE ~ x2023_prediction
+  ))
+
+
+yearly_total_prediction <- df_forecast_with_trend  %>%
+  mutate(x2023 = case_when(
+    is.na(x2023) ~ x2023_prediction,
+    TRUE ~ x2023
+  )) %>%
+  adorn_totals("row") %>%
+  as.data.frame() %>%
+  filter(month == "Total")
+
+yearly_total_prediction
+```
+
+## "The result: The number of people killed each month has been lower than the forecast, but still within the expected range. That means the first five months of 2023 are not major outliers."
+
+```{r}
+
+df_forecast_with_trend %>%
+  select(month, starts_with("x2023")) %>%
+  slice(1:5)
+
+```
+
+## "The Banner made its year-end prediction by continuing the 2023 trend for the rest of the year. If homicides stay about 17% less than the forecast, Baltimore would end the year with 275 homicides."
+
+```{r}
+
+percent_of_forecast
+
+```
+
+## "As one example, the Northeastern District's trend toward more homicides has continued into 2023, where 23 people have been killed, up 28% from last year."
+
+```{r}
+
+years <- 2015:2023
+
+for (nume in seq(1:length(years))){
+  
+  input_year <- years[nume]
+  
+  temp <- victims %>% 
+    filter(year == input_year,
+           date <= mdy(paste0(month(last_date), "/", day(last_date), "/", input_year)),
+           description == "homicide") %>%
+    #mutate(temp_high_school_age = case_when(
+    #  age_range %notin% c("high school teen", "child") ~ "19 and older",
+    #  TRUE ~ age_range
+    #)) %>%
+    group_by(description, district) %>%
+    summarise(!!paste0("x", input_year) := n()) 
+  
+  
+  if (nume == 1){
+    
+    output <- temp
+    
+  } else {
+    output <- output %>%
+      full_join(temp)
+  }
+}
+
+homicides_by_district <- output 
+
+change_by_district <- homicides_by_district %>%
+  mutate(x2023_change = x2023 - x2022) %>%
+  ungroup() %>%
+  select(-description) %>%
+  mutate(district = str_to_title(case_when(
+    district %in% c("northeast", "northwest", "southeast", "southwest") ~ paste0(district, "ern"),
+    TRUE ~ district
+  ))) %>%
+  mutate(up_or_down = case_when(
+    x2023_change > 0 ~ "up",
+    x2023_change < 0 ~ "down",
+    TRUE ~ "same"
+  ))
+
+northeastern_change <- change_by_district %>%
+  filter(district == "Northeastern")
+
+northeastern_change
+
+```
+
+```{r}
+
+northeastern_change$x2023_change/northeastern_change$x2022
+
+```
+
+## "So far this year, there have been 18 homicides in the Western, compared to 16 homicides last year."
+
+```{r}
+
+change_by_district %>%
+  filter(district == "Western")
+
+```
+
+## "Still, aside from 2022, the number of homicides in the Western is the lowest its been at this point in any year since 2015, matching the 2018 total."
+
+```{r}
+
+change_by_district %>%
+  filter(district == "Western")
+
+```
+
+## "Notably, homicides are down in the Southwestern District, too, where the strategy was expanded starting this year."
+
+```{r}
+
+change_by_district %>%
+  filter(district == "Southwestern")
+
+```
