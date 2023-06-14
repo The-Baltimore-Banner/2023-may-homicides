@@ -1,4 +1,4 @@
-Western District Group Violence Reduction Strategy Analysis
+2023 Midyear Homicide Analysis
 ================
  - [Overview](#overview)
  - [Data](#data)
